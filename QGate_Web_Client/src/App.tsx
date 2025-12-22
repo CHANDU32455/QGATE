@@ -1,26 +1,132 @@
-import { useState } from 'react';
+import { useState, useEffect, useCallback, useRef } from 'react';
+import io, { Socket } from 'socket.io-client';
+import axios from 'axios';
 import './App.css';
 import QGateAuth from './components/QGateAuth';
 import BankingDashboard from './components/BankingDashboard';
 import { Landmark, Shield, Cpu, Lock } from 'lucide-react';
 
+const BACKEND_URL = import.meta.env.VITE_BACKEND_URL;
+
 function App() {
   const [isAuthenticated, setIsAuthenticated] = useState(false);
   const [showAuth, setShowAuth] = useState(false);
   const [user, setUser] = useState<any>(null);
+  const [isLoading, setIsLoading] = useState(true);
+  const socketRef = useRef<Socket | null>(null);
+
+  // Persistence: Hydrate session on mount
+  useEffect(() => {
+    const initAuth = async () => {
+      const savedToken = localStorage.getItem('bank_token');
+      const savedUser = localStorage.getItem('bank_user');
+
+      if (savedToken && savedUser) {
+        try {
+          // Verify token is still valid with backend
+          const resp = await axios.get(`${BACKEND_URL}/api/me`, {
+            headers: { Authorization: `Bearer ${savedToken}` }
+          });
+          setUser(resp.data);
+          setIsAuthenticated(true);
+        } catch (err) {
+          console.error('Session hydration failed:', err);
+          localStorage.removeItem('bank_token');
+          localStorage.removeItem('bank_user');
+        }
+      }
+      setIsLoading(false);
+    };
+
+    initAuth();
+  }, []);
+
+  // Socket management for real-time revocation
+  useEffect(() => {
+    if (isAuthenticated && user) {
+      if (!socketRef.current) {
+        const socket = io(BACKEND_URL);
+        socketRef.current = socket;
+
+        socket.on('connect', () => {
+          console.log('[Socket] Connected, joining user room:', user.userId);
+          socket.emit('joinUser', user.userId);
+        });
+
+        socket.on('sessions_updated', async () => {
+          console.log('[Socket] Sessions updated, verifying current session...');
+          const token = localStorage.getItem('bank_token');
+          if (!token) return;
+
+          try {
+            await axios.get(`${BACKEND_URL}/api/me`, {
+              headers: { Authorization: `Bearer ${token}` }
+            });
+          } catch (err) {
+            console.warn('[Socket] Session no longer valid, logging out');
+            logout();
+          }
+        });
+
+        socket.on('disconnect', () => {
+          console.log('[Socket] Disconnected');
+        });
+      }
+    } else {
+      if (socketRef.current) {
+        socketRef.current.disconnect();
+        socketRef.current = null;
+      }
+    }
+
+    return () => {
+      if (socketRef.current) {
+        socketRef.current.disconnect();
+        socketRef.current = null;
+      }
+    };
+  }, [isAuthenticated, user]);
 
   const handleAuthenticated = (token: string, userData: any) => {
     localStorage.setItem('bank_token', token);
+    localStorage.setItem('bank_user', JSON.stringify(userData));
     setUser(userData);
     setIsAuthenticated(true);
     setShowAuth(false);
   };
 
-  const logout = () => {
+  const logout = useCallback(async () => {
+    const token = localStorage.getItem('bank_token');
+    if (token) {
+      try {
+        await axios.post(`${BACKEND_URL}/api/logout`, {}, {
+          headers: { Authorization: `Bearer ${token}` }
+        });
+      } catch (err) {
+        console.error('Remote logout failed:', err);
+      }
+    }
+
     localStorage.removeItem('bank_token');
+    localStorage.removeItem('bank_user');
     setIsAuthenticated(false);
     setUser(null);
-  };
+    if (socketRef.current) {
+      socketRef.current.disconnect();
+      socketRef.current = null;
+    }
+  }, []);
+
+  if (isLoading) {
+    return (
+      <div className="premium-container fade-in" style={{ display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+        <div style={{ textAlign: 'center' }}>
+          <Lock className="accent-text animate-pulse" size={48} style={{ marginBottom: '1rem' }} />
+          <p style={{ color: '#888' }}>Securing Connection...</p>
+        </div>
+      </div>
+    );
+  }
 
   if (isAuthenticated && user) {
     return <BankingDashboard user={user} onLogout={logout} />;

@@ -135,9 +135,28 @@ router.get('/admin/users', adminOnly, async (req, res) => {
 
 router.delete('/admin/users/:regUserId', adminOnly, async (req, res) => {
   try {
-    const result = await User.deleteOne({ regUserId: req.params.regUserId });
+    const { regUserId } = req.params;
+
+    // 1. Get all active sessions for this user
+    const sessionTokens = await redisClient.sMembers(`user_sessions:${regUserId}`);
+
+    // 2. Delete each session from Redis
+    if (sessionTokens.length > 0) {
+      await Promise.all(sessionTokens.map(token => redisClient.del(`session:${token}`)));
+    }
+
+    // 3. Delete the user's session set
+    await redisClient.del(`user_sessions:${regUserId}`);
+
+    // 4. Delete the user from MongoDB
+    const result = await User.deleteOne({ regUserId });
     if (result.deletedCount === 0) return res.status(404).json({ error: 'User not found' });
-    console.log(`[Backend] Admin ${req.adminUser.username} deleted user: ${req.params.regUserId}`);
+
+    // 5. Notify all devices to logout
+    const io = req.app.get('io');
+    io.to(`user:${regUserId}`).emit('sessions_updated');
+
+    console.log(`[Backend] Admin ${req.adminUser.username} deleted user and cleared sessions for: ${regUserId}`);
     res.json({ success: true });
   } catch (err) {
     console.error('[Backend] Admin delete user error:', err);
@@ -162,6 +181,11 @@ router.patch('/admin/users/:regUserId/role', adminOnly, async (req, res) => {
 
     const user = await User.findOneAndUpdate({ regUserId: req.params.regUserId }, { role }, { new: true });
     if (!user) return res.status(404).json({ error: 'User not found' });
+
+    // Notify all devices to refresh their session/role data
+    const io = req.app.get('io');
+    io.to(`user:${user.regUserId}`).emit('sessions_updated');
+
     console.log(`[Backend] Admin ${req.adminUser.username} updated role for ${user.username} to ${role}`);
     res.json({ success: true, role: user.role });
   } catch (err) {
@@ -371,6 +395,36 @@ router.delete('/sessions/:token', async (req, res) => {
     } else res.status(403).json({ error: 'Forbidden' });
   } catch (err) {
     res.status(500).json({ error: 'Revoke error' });
+  }
+});
+
+router.post('/logout', async (req, res) => {
+  try {
+    const authHeader = req.headers.authorization;
+    if (!authHeader || !authHeader.startsWith('Bearer ')) {
+      return res.status(401).json({ error: 'Unauthorized' });
+    }
+    const token = authHeader.split(' ')[1];
+    const data = await redisClient.get(`session:${token}`);
+
+    if (data) {
+      const { userId } = JSON.parse(data);
+      // 1. Delete the session key
+      await redisClient.del(`session:${token}`);
+      // 2. Remove from user's session list
+      await redisClient.sRem(`user_sessions:${userId}`, token);
+
+      // 3. Notify all user's devices to refresh/logout
+      const io = req.app.get('io');
+      io.to(`user:${userId}`).emit('sessions_updated');
+
+      console.log(`[Backend] User logged out, session revoked: ${userId}`);
+    }
+
+    res.json({ success: true });
+  } catch (err) {
+    console.error('[Backend] Logout error:', err);
+    res.status(500).json({ error: 'Logout failed' });
   }
 });
 
