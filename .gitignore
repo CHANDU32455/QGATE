@@ -12,6 +12,7 @@ yarn-error.log*
 .env.local
 .env.production
 .env.development
+!QGate_Web_Client/.env
 
 # Mobile / Expo
 .expo/
@@ -34,6 +35,6 @@ web-build/
 backend/npm-debug.log*
 
 # Frontend specific
-QgateMobile/node_modules/
+q-gate-mobile/node_modules/
 QGate_Web_Client/node_modules/
 QGate_Web_Client/dist/
