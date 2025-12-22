@@ -1,1 +1,1 @@
-export const BACKEND_URL = 'http://10.38.168.120:5000';
+export const BACKEND_URL = 'https://i77qirrwmw.us-east-1.awsapprunner.com';
