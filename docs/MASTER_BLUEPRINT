@@ -1,0 +1,91 @@
+# MASTER BLUEPRINT — Q-Gate Post-Quantum Auth
+
+This blueprint consolidates our discussions into a single, technically rigorous specification. It is designed to be fed into an AI agent (like Cursor or Claude) to build a Post-Quantum Authentication (PQA) system that uses a mobile device as a hardware root-of-trust.
+
+---
+
+## 1. System Architecture Overview
+
+This system replaces vulnerable RSA/ECC with ML-DSA (Crystals-Dilithium) and uses Opaque Tokens for session management to ensure "Quantum Resilience." 
+
+- **Mobile (The Signer):** React Native app acting as a Hardware Security Module (HSM).
+- **Web (The Gate):** React.js portal that triggers challenges via QR.
+- **Backend (The Verifier):** Node.js server that validates signatures and manages stateful sessions.
+
+---
+
+## 2. Technical Stack
+
+- **Layer / Technology / Purpose**
+  - **Backend:** Node.js + Express — API & Verification Logic.
+  - **Mobile:** React Native — Cross-platform hardware access.
+  - **Web:** React.js (Vite) — Challenge display & session handling.
+  - **PQ Crypto:** `@asanrom/dilithium` — Implementation of ML-DSA (Dilithium).
+  - **Data:** MongoDB + Redis — MongoDB for keys; Redis for ephemeral challenges.
+  - **Interlink:** Socket.io — Real-time PC-to-Mobile handshake.
+
+---
+
+## 3. Backend Blueprint (Node.js/Express)
+
+### A. Data Models
+
+- **User Schema (MongoDB):**
+  - `{ regUserId, username, pq_pub_key: Buffer }`
+
+- **Session Schema (Redis):**
+  - `challenge:[sessionId] -> { nonce, regUserId, status: 'pending' }`
+
+### B. Core Endpoints
+
+- **POST /api/register:** Receives publicKey from Mobile and generates a permanent regUserId.
+- **POST /api/initiate:** Takes regUserId. Generates 64-byte random nonce. Stores in Redis and returns `{ sessionId, nonce }`.
+- **POST /api/verify:** Receives `{ sessionId, signature }`. Performs `dilithium.verify(nonce, signature, stored_pub_key)`. If valid: (1) Generates Opaque Token `crypto.randomBytes(32)`. (2) Emits success to Socket.io room.
+
+---
+
+## 4. Mobile Blueprint (React Native)
+
+### A. Hardware Binding Logic
+
+- **Key Storage:** Use `react-native-keychain` with `BIOMETRY_CURRENT_SET` to store a seed.
+- **PQ Generation:** On first run, derive a Dilithium Keypair from the secure seed. The Private Key stays in memory only during the signing operation.
+
+### B. The "Main Guy" Toggle Logic
+
+- **State:** `isWebMode: boolean`.
+- **QR Scanner:** * If `isWebMode` is TRUE: Scanning a QR extracts the `sessionId` and `nonce`.
+- **Flow:** App immediately triggers `Biometrics.authenticate()`. Upon biometric success, it signs the nonce and calls the backend `/verify`.
+
+---
+
+## 5. Frontend Blueprint (React Web)
+
+### A. Universal Login Component
+
+- **User enters** `regUserId`.
+- **App fetches challenge** and displays QR.
+- **Socket.io Interlink:** * Joins room: `socket.emit('join', sessionId)`. Wait for: `socket.on('authenticated', (opaqueToken) => { ... })`.
+
+---
+
+## 🤖 Implementation Instructions for AI Agents
+
+Copy-paste this prompt into your AI coder:
+
+"Build a robust PQA system using Node.js, React, and React Native.
+
+Architecture Requirements:
+- Use `@asanrom/dilithium` for ML-DSA (NIST Level 3) signatures.
+- Implement Device Binding: The Mobile App generates a PQ keypair. The Private Key must be protected by Biometrics using `react-native-biometrics`.
+- Implement Interlink: Use Socket.io to sync the PC and Mobile. When the Mobile app posts a signature to `/api/verify`, the Backend must emit a success event to the specific `sessionId` room.
+- Quantum-Safe Sessions: Do not use JWT. Use Opaque Tokens (256-bit random strings) stored in Redis.
+- UX Flow: User enters `regUserId` on Web -> Web shows QR -> Mobile App (with 'Web Mode' Toggle ON) scans QR -> Mobile verifies Biometrics -> Mobile signs challenge -> Web auto-logs in.
+- Ensure all binary data (Keys/Signatures) are handled as Buffers/Uint8Arrays to prevent encoding corruption."
+
+---
+
+## Why this Architecture is Secure
+
+- **No "Harvest Now, Decrypt Later":** Even if the TLS tunnel is intercepted, the Opaque Tokens and Dilithium signatures have no mathematical vulnerability to Shor's or Grover's algorithms.
+- **Device Integrity:** The "Identity" is the phone. Without the physical Narzo 20A and your fingerprint, the regUserId is useless.

@@ -1,0 +1,104 @@
+# Master Implementation Blueprint — Post-Quantum Authentication (PQA) Backend
+
+This document is the Master Implementation Blueprint for the Post-Quantum Authentication (PQA) backend. It is written for AI coding agents (e.g., GitHub Copilot, Claude, Cursor) to implement a robust, device-bound, and quantum-safe authentication architecture.
+
+---
+
+## 📋 1. Project Overview & Strategy
+
+**Goal:** Build a Zero-Trust authentication system using a QR-based challenge-response flow where the mobile device acts as a hardware key.
+
+**Security principle:** No RSA/ECC; use NIST-approved post-quantum signatures (ML-DSA, e.g., Dilithium) and high-entropy opaque session tokens.
+
+**Device binding:** Each `regUserId` is cryptographically bound to the user's device (e.g., Realme Narzo 20A) — the private key never leaves the device.
+
+---
+
+## 🔧 2. Tech Stack
+
+- **Runtime:** Node.js (Latest LTS) — high concurrency, binary buffer support.
+- **Framework:** Express.js — modular routing for registration/auth flows.
+- **Realtime:** Socket.io — link the PC browser and mobile app live.
+- **DB (Primary):** MongoDB — store ML-DSA public keys (buffers ~1.3KB).
+- **DB (Cache):** Redis — TTL challenges and opaque sessions.
+- **PQ Library:** `@asanrom/dilithium` — JS implementation of Crystals-Dilithium.
+
+---
+
+## 🧭 3. Step-by-Step Implementation Guide
+
+### Step 1 — Secure Registration (POST /api/register)
+- **Objective:** Create a permanent, quantum-safe link between user and device.
+- **Mobile action:** Generate Dilithium keypair in the device TEE and send `{ username, publicKey }` (publicKey as Buffer).
+- **Backend logic:**
+  - Generate a unique `regUserId`.
+  - Store user record: `{ regUserId, username, pq_pub_key: <Buffer>, registered_device: "Realme_Narzo_20A" }`.
+  - Validate public key size (e.g., ML-DSA-65) and schema.
+
+### Step 2 — Login Challenge (POST /api/initiate)
+- **Objective:** Produce a nonce to prevent replay attacks and link PC & mobile via QR.
+- **User action (Web):** Enter username (or select account).
+- **Backend logic:**
+  - Generate `challengeNonce = crypto.randomBytes(64)`.
+  - Create `session_id` (unique) and store in Redis: `SETEX challenge:[session_id] [challengeNonce] 120` (2-minute TTL).
+  - Return `{ challengeNonce, session_id }` for QR display.
+
+### Step 3 — Verification Handshake (POST /api/verify)
+- **Objective:** Verify the user's device signature on the challenge.
+- **Mobile action:** Scan QR → Sign `challengeNonce` with TEE private key → Send `{ session_id, signature }` to backend.
+- **Backend logic:**
+  - Fetch `challengeNonce` from Redis by `session_id`.
+  - Get `pq_pub_key` from MongoDB for the user/session.
+  - Verify with PQ library: `dilithium.verify(signature, challengeNonce, pq_pub_key)`.
+  - On success: emit a `verified` event to the Socket.io room `session_id`.
+
+### Step 4 — Quantum-Safe Session Creation
+- **Objective:** Use opaque high-entropy tokens instead of JWTs.
+- **Logic:**
+  - On verification: `sessionToken = crypto.randomBytes(32).toString('hex')`.
+  - Store in Redis: `SET session:[token] { userId, status: 'authenticated' }` (set appropriate TTL/refresh rules).
+  - Deliver token to PC via Socket.io and/or `Set-Cookie` (HttpOnly, Secure).
+- **Resilience:** A high-entropy random token is not vulnerable to Shor's or Grover's speedups.
+
+---
+
+## 🛠️ Instructions for AI Agents (Copy/Paste Prompt)
+
+Please initialize a Node.js project based on this plan and implement the following:
+
+- Set up MongoDB for persistent user storage and Redis for short-lived challenges/sessions.
+- Use the `@asanrom/dilithium` PQ library for signing/verification.
+- Implement `verifyPQ(message, signature, pubKey)` utility that wraps the PQ library verification.
+- Implement Socket.io room logic: the PC joins room `session_id`, and POST `/api/verify` emits to that room on success.
+- Use **opaque tokens** generated with `crypto.randomBytes(32)`; do **not** use `jsonwebtoken`.
+
+Example `verifyPQ` sketch:
+
+```js
+// utils/crypto.js
+const dilithium = require('@asanrom/dilithium');
+
+function verifyPQ(message, signature, pubKey) {
+  // normalize inputs (Buffers)
+  return dilithium.verify(signature, message, pubKey);
+}
+
+module.exports = { verifyPQ };
+```
+
+---
+
+## ✅ Why this is Secure
+
+- **The Signature:** Dilithium (ML-DSA) is quantum-resistant; signatures cannot be forged by quantum computers using known attacks.
+- **The Session:** Opaque random tokens have no exploitable mathematical structure for quantum speedups.
+- **The Hardware:** Private keys remain in device TEE; server compromise does not leak private keys.
+
+---
+
+**Notes & Next Steps:**
+- Define TTL and refresh policy for `session:` entries in Redis.
+- Add rate-limiting and anti-replay checks (e.g., one-used nonces only).
+- Add test vectors for PQ verification and end-to-end integration tests.
+
+*Document updated and formatted for implementation.*

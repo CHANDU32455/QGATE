@@ -1,0 +1,39 @@
+# Node
+node_modules/
+dist/
+build/
+.npm
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+# Environment
+.env
+.env.local
+.env.production
+.env.development
+
+# Mobile / Expo
+.expo/
+*.jks
+*.p8
+*.p12
+*.key
+*.mobileprovision
+*.orig.*
+web-build/
+
+# IDEs
+.vscode/
+.idea/
+*.swp
+*.swo
+.DS_Store
+
+# Backend specific
+backend/npm-debug.log*
+
+# Frontend specific
+QgateMobile/node_modules/
+QGate_Web_Client/node_modules/
+QGate_Web_Client/dist/

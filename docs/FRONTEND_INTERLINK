@@ -1,0 +1,81 @@
+# FRONTEND_INTERLINK.md: Hybrid PQ UI/UX Logic
+
+---
+
+## 1. User Experience (UX) Flow
+
+- **Identity Entry:** User enters their regUserId on the PC/Web portal.
+
+- **QR Generation:** PC sends the ID to the backend, gets a challenge, and displays a QR code.
+
+- **App Interaction (The "Main Guy")**:
+  - **Local Mode:** App stays on the dashboard (uses Biometrics to unlock local features).
+  - **Web-Mode (Toggle ON):** Scanning the PC's QR triggers the Secure Enclave.
+  - **Verification:** The phone signs the challenge; the PC "Verify" button turns green/auto-submits.
+
+---
+
+## 2. Web Portal Logic (React.js)
+
+- **Role:** The PC acts as the "Receiver" in this interlink.
+
+- **Step-by-Step implementation:**
+  - **State Management:** Track step (Enter ID -> Show QR -> Waiting).
+
+  - **Socket Connection:**
+    - On "Login" click: `socket.emit('join-session', regUserId)`.
+    - Listen for `verified`: Redirect user to Dashboard.
+
+  - **QR Handling:** Use `react-qr-code` to display the `challengeNonce` received from the server.
+
+  - **Verification Button:** Initially disabled. It becomes an "Awaiting Mobile..." spinner, then automatically triggers the final login when the socket receives the success signal.
+
+---
+
+## 3. Mobile App Logic (React Native)
+
+- **Role:** The mobile app is the "Signer" and must handle the hardware secrets.
+
+- **Step-by-Step implementation:**
+  - **The Master Toggle:** A UI switch Web Authentication Mode.
+    - **If OFF:** QR scanner is disabled or used for local contacts.
+    - **If ON:** QR scanner actively looks for "Q-Gate" challenge formats.
+
+  - **QR Integration:** Use `react-native-vision-camera`.
+
+  - **Scan Logic:** When a QR is detected, extract `session_id` and `nonce`.
+
+  - **Secure Enclave & PQC Signing:**
+    - **Trigger:** Call `Biometrics.createSignature({ prompt: "Authorize Web Login" })`.
+    - **The Math:** Retrieve the Dilithium Seed (stored in `react-native-keychain` protected by biometrics).
+    - **Sign:** Run the `dilithium.sign(nonce, privateKey)` function.
+    - **Submission:** `POST /api/auth/verify` with the signature.
+
+---
+
+## 🤖 AI Agent Prompt (Frontend Implementation)
+
+"Build a React (Web) and React Native (Mobile) pair for the 'Q-Gate' system.
+
+**For Web:**
+- Create a 'Universal Login' screen where the user enters a `regUserId`.
+- On submission, show a QR code and connect to a Socket.io room.
+- Auto-redirect when the verified event is received.
+
+**For Mobile (React Native):**
+- Implement a 'Web/Mobile Toggle'.
+- In 'Web Mode', scan a QR, trigger `react-native-biometrics`, and sign the extracted nonce using the `@asanrom/dilithium` library.
+- Ensure the private key is derived from a seed stored in the Hardware-Backed Keystore (Android) or Secure Enclave (iOS).
+- Post the final signature to the backend.
+
+**Security Rule:** Never show the private key. Signing must happen in a background service."
+
+---
+
+## 💡 Why this is "Grade A" Secure
+
+- **The regUserId:** It’s not just a name; it’s a pointer to a specific Quantum-Safe Public Key in your DB.
+
+- **Auto-Handling:** The user doesn't have to "copy-paste" anything. The Socket.io "Interlink" handles the handshake behind the scenes.
+
+- **Toggle Logic:** This prevents accidental logins or "ghost" prompts. The user must actively decide to authenticate a web session.
