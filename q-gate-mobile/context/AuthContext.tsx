@@ -1,7 +1,8 @@
-import React, { createContext, useContext, useState, useEffect } from 'react';
+import React, { createContext, useContext, useState, useEffect, useRef } from 'react';
 import { Platform } from 'react-native';
 import { UnifiedStorage } from '../utils/storage';
 import axios from 'axios';
+import io, { Socket } from 'socket.io-client';
 import { hasIdentity, getIdentityMetadata, getPublicKey, storeIdentityMetadata } from '../utils/pqc';
 
 import { BACKEND_URL } from '../constants/Config';
@@ -24,6 +25,47 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     const [user, setUser] = useState<any | null>(null);
     const [role, setRole] = useState<string | null>(null);
     const [loading, setLoading] = useState(true);
+    const socketRef = useRef<Socket | null>(null);
+
+    // Global Socket for real-time revocation
+    useEffect(() => {
+        if (isAuthenticated && user?.userId) {
+            if (!socketRef.current) {
+                const socket = io(BACKEND_URL);
+                socketRef.current = socket;
+
+                socket.on('connect', () => {
+                    console.log('[Auth Socket] Connected, joining room:', user.userId);
+                    socket.emit('joinUser', user.userId);
+                });
+
+                socket.on('sessions_updated', async () => {
+                    console.log('[Auth Socket] Sessions updated, verifying...');
+                    const token = await UnifiedStorage.getItem('qgate_token');
+                    if (!token) return;
+                    try {
+                        await axios.get(`${BACKEND_URL}/api/me`, {
+                            headers: { Authorization: `Bearer ${token}` }
+                        });
+                    } catch (err) {
+                        console.warn('[Auth Socket] Session revoked, logging out');
+                        logout();
+                    }
+                });
+            }
+        } else {
+            if (socketRef.current) {
+                socketRef.current.disconnect();
+                socketRef.current = null;
+            }
+        }
+        return () => {
+            if (socketRef.current) {
+                socketRef.current.disconnect();
+                socketRef.current = null;
+            }
+        };
+    }, [isAuthenticated, user?.userId]);
 
     const refreshStatus = async () => {
         try {
@@ -93,6 +135,16 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     };
 
     const logout = async () => {
+        const token = await UnifiedStorage.getItem('qgate_token');
+        if (token) {
+            try {
+                await axios.post(`${BACKEND_URL}/api/logout`, {}, {
+                    headers: { Authorization: `Bearer ${token}` }
+                });
+            } catch (err) {
+                console.log('[Auth] Remote logout failed:', err);
+            }
+        }
         await UnifiedStorage.deleteItem('qgate_token');
         setIsAuthenticated(false);
         setRole(null);
