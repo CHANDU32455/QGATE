@@ -6,6 +6,7 @@ import { Ionicons } from '@expo/vector-icons';
 import { Image } from 'expo-image';
 import { BlurView } from 'expo-blur';
 import axios from 'axios';
+import * as Clipboard from 'expo-clipboard';
 import { ThemedView } from '@/components/themed-view';
 import { ThemedText } from '@/components/themed-text';
 import {
@@ -31,6 +32,7 @@ function RegisterScreen() {
     const [recoveryMnemonic, setRecoveryMnemonic] = useState('');
     const [loading, setLoading] = useState(false);
     const [step, setStep] = useState('input'); // input, generating, registering, backup, recovery, success
+    const [copied, setCopied] = useState(false);
 
     useEffect(() => {
         const checkExisting = async () => {
@@ -48,6 +50,16 @@ function RegisterScreen() {
         }
 
         setLoading(true);
+
+        // Pre-flight Health Check
+        try {
+            await axios.get(`${BACKEND_URL}/health`, { timeout: 3000 });
+        } catch (err) {
+            setLoading(false);
+            Alert.alert('Connection Error', 'Cannot reach Q-Gate Server. Please check if the backend is running and reachable.');
+            return;
+        }
+
         setStep('generating');
 
         try {
@@ -57,9 +69,11 @@ function RegisterScreen() {
             if (!publicKey) throw new Error('Failed to generate PQC keys');
 
             setStep('registering');
+            // Added timeout to prevent hanging
             const initResp = await axios.post(`${BACKEND_URL}/api/register/initiate`, {
                 clientHint: 'com.qgate.auth'
-            });
+            }, { timeout: 10000 });
+
             const { regSessionId, regNonce } = initResp.data;
 
             const registrationPayload = {
@@ -73,7 +87,7 @@ function RegisterScreen() {
                 }
             };
 
-            const regResp = await axios.post(`${BACKEND_URL}/api/register`, registrationPayload);
+            const regResp = await axios.post(`${BACKEND_URL}/api/register`, registrationPayload, { timeout: 10000 });
             const { regUserId } = regResp.data;
             await storeIdentityMetadata(regUserId, username);
 
@@ -86,6 +100,7 @@ function RegisterScreen() {
             await refreshStatus();
             setStep('backup');
         } catch (error: any) {
+            console.error('Registration Error:', error);
             const status = error.response?.status;
             const data = error.response?.data;
 
@@ -98,7 +113,8 @@ function RegisterScreen() {
                     { text: 'Access Profile', onPress: () => router.push('/profile') }
                 ]);
             } else {
-                Alert.alert('Binding Failed', data?.error || 'Handshake failed. Ensure you have an internet connection.');
+                const msg = error.code === 'ECONNABORTED' ? 'Request timed out. Server is taking too long.' : (data?.error || 'Handshake failed.');
+                Alert.alert('Binding Failed', msg);
             }
             setStep('input');
         } finally {
@@ -143,12 +159,20 @@ function RegisterScreen() {
             };
 
             const regResp = await axios.post(`${BACKEND_URL}/api/recover`, recoveryPayload);
-            const { regUserId, username: recoveredUsername } = regResp.data;
+            const { regUserId, username: recoveredUsername, approvalRequired } = regResp.data;
             await storeIdentityMetadata(regUserId, recoveredUsername);
             await refreshStatus();
 
-            Alert.alert('Recovery Successful', `Your identity "${recoveredUsername}" has been restored.`);
-            setStep('success');
+            if (approvalRequired) {
+                Alert.alert(
+                    'Recovery Logged',
+                    'Security Protocol: Your identity has been restored locally, but an administrator must verify and "Unlock" your account before you can log in.',
+                    [{ text: 'Acknowledged', onPress: () => router.replace('/profile') }]
+                );
+            } else {
+                Alert.alert('Recovery Successful', `Your identity "${recoveredUsername}" has been restored.`);
+                setStep('success');
+            }
         } catch (error: any) {
             const data = error.response?.data;
             Alert.alert('Recovery Failed', data?.error || error.message || 'Failed to recover identity. Please check your mnemonic and internet connection.');
@@ -156,6 +180,12 @@ function RegisterScreen() {
         } finally {
             setLoading(false);
         }
+    };
+
+    const handleCopyMnemonic = async () => {
+        await Clipboard.setStringAsync(mnemonic);
+        setCopied(true);
+        setTimeout(() => setCopied(false), 3000);
     };
 
     return (
@@ -263,6 +293,19 @@ function RegisterScreen() {
 
                             <View style={styles.mnemonicBox}>
                                 <ThemedText style={styles.mnemonicText}>{mnemonic}</ThemedText>
+                                <TouchableOpacity
+                                    style={[styles.copyBadge, copied && styles.copyBadgeSuccess]}
+                                    onPress={handleCopyMnemonic}
+                                >
+                                    <Ionicons
+                                        name={copied ? "checkmark-circle" : "copy-outline"}
+                                        size={18}
+                                        color={copied ? "#10B981" : "#646cff"}
+                                    />
+                                    <ThemedText style={[styles.copyBadgeText, copied && { color: '#10B981' }]}>
+                                        {copied ? 'COPIED' : 'COPY'}
+                                    </ThemedText>
+                                </TouchableOpacity>
                             </View>
 
                             <TouchableOpacity style={styles.backButton} onPress={() => setStep('success')}>
@@ -488,6 +531,30 @@ const styles = StyleSheet.create({
         lineHeight: 24,
         textAlign: 'center',
         fontFamily: 'monospace',
+        marginBottom: 10,
+    },
+    copyBadge: {
+        flexDirection: 'row',
+        alignItems: 'center',
+        justifyContent: 'center',
+        gap: 8,
+        backgroundColor: 'rgba(100, 108, 255, 0.1)',
+        paddingVertical: 8,
+        paddingHorizontal: 16,
+        borderRadius: 12,
+        alignSelf: 'center',
+        borderWidth: 1,
+        borderColor: 'rgba(100, 108, 255, 0.2)',
+    },
+    copyBadgeSuccess: {
+        backgroundColor: 'rgba(16, 185, 129, 0.1)',
+        borderColor: 'rgba(16, 185, 129, 0.3)',
+    },
+    copyBadgeText: {
+        fontSize: 12,
+        color: '#646cff',
+        fontWeight: '900',
+        letterSpacing: 1,
     },
     footer: {
         marginTop: 40,

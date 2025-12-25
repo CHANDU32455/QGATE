@@ -10,13 +10,13 @@ import Animated, {
 } from 'react-native-reanimated';
 import { Stack, useRouter } from 'expo-router';
 import axios from 'axios';
-import * as SecureStore from 'expo-secure-store';
 import { Ionicons } from '@expo/vector-icons';
 import * as LocalAuthentication from 'expo-local-authentication';
 import * as Haptics from 'expo-haptics';
 import { BlurView } from 'expo-blur';
 import { Image } from 'expo-image';
 import { SafeAreaView } from 'react-native-safe-area-context';
+import * as Clipboard from 'expo-clipboard';
 import Scanner from '@/components/Scanner';
 import BiometricAuth from '@/components/BiometricAuth';
 
@@ -29,8 +29,6 @@ import { BACKEND_URL } from '../../constants/Config';
 export default function ProfileScreen() {
     const { isRegistered, isAuthenticated, user, refreshStatus, logout, loading: authLoading, role } = useAuth();
     const [sessions, setSessions] = useState<any[]>([]);
-    const [lastScanData, setLastScanData] = useState<string | null>(null);
-    const scannerTimeoutRef = useRef<NodeJS.Timeout | null>(null);
     const socketRef = useRef<Socket | null>(null);
     const [loading, setLoading] = useState(false);
     const [refreshing, setRefreshing] = useState(false);
@@ -108,7 +106,7 @@ export default function ProfileScreen() {
                         await logout();
                         await resetIdentity();
                         await refreshStatus();
-                        router.replace('/');
+                        router.replace('/register');
                     }
                 }
             ]
@@ -242,7 +240,16 @@ export default function ProfileScreen() {
                 Alert.alert(
                     'Recovery Phrase',
                     `Write these 24 words down:\n\n${phrase}`,
-                    [{ text: 'I HAVE SAVED IT', style: 'default' }]
+                    [
+                        {
+                            text: 'COPY TO CLIPBOARD',
+                            onPress: async () => {
+                                await Clipboard.setStringAsync(phrase);
+                                Alert.alert('Copied', 'Phrase copied to clipboard.');
+                            }
+                        },
+                        { text: 'I HAVE SAVED IT', style: 'default' }
+                    ]
                 );
             }
         } catch (error) {

@@ -1,0 +1,114 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>QGate Auth Demo</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;600;800&display=swap" rel="stylesheet">
+    <style>
+        body {
+            background-color: #050505;
+            color: white;
+            font-family: 'Inter', sans-serif;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+            min-height: 100vh;
+            margin: 0;
+            overflow: hidden;
+        }
+
+        .container {
+            text-align: center;
+            z-index: 1;
+        }
+
+        h1 {
+            font-size: 3rem;
+            font-weight: 800;
+            margin-bottom: 0.5rem;
+            background: linear-gradient(to right, #6366f1, #a855f7, #ec4899);
+            -webkit-background-clip: text;
+            background-clip: text;
+            /* Added standard property */
+            -webkit-text-fill-color: transparent;
+        }
+
+        p {
+            color: #888;
+            font-size: 1.1rem;
+            margin-bottom: 2rem;
+        }
+
+        .background-glow {
+            position: absolute;
+            top: 50%;
+            left: 50%;
+            transform: translate(-50%, -50%);
+            width: 600px;
+            height: 600px;
+            background: radial-gradient(circle, rgba(99, 102, 241, 0.15) 0%, rgba(168, 85, 247, 0.05) 50%, transparent 70%);
+            pointer-events: none;
+        }
+
+        #result {
+            margin-top: 2rem;
+            padding: 1rem;
+            border-radius: 12px;
+            background: rgba(255, 255, 255, 0.03);
+            border: 1px solid rgba(255, 255, 255, 0.1);
+            display: none;
+            max-width: 500px;
+            word-break: break-all;
+        }
+    </style>
+</head>
+
+<body>
+    <div class="background-glow"></div>
+
+    <div class="container">
+        <h1>Service Consumer App</h1>
+        <p>Experience the future of quantum-secure single-click authentication.</p>
+
+        <div id="qgate-auth-container"></div>
+
+        <div id="result">
+            <h3 style="color: #10B981">Success! User Authenticated</h3>
+            <p id="token-display" style="font-family: monospace; font-size: 0.9rem; color: #6366f1;"></p>
+            <button onclick="location.reload()"
+                style="background: transparent; border: 1px solid #333; color: #888; padding: 8px 16px; border-radius: 8px; cursor: pointer; margin-top: 10px;">Logout</button>
+        </div>
+    </div>
+
+    <script src="qgate-auth-sdk.js"></script>
+    <script>
+        // Use the local backend by default
+        let backendUrl = 'http://localhost:5000';
+
+        // If hosted on a specific domain, you might change this logic
+        if (window.location.hostname && !['localhost', '127.0.0.1'].includes(window.location.hostname)) {
+            backendUrl = 'https://qgate-backend.onrender.com'; // Placeholder
+        }
+
+        QGate.init({
+            containerId: 'qgate-auth-container',
+            backendUrl: backendUrl,
+            onSuccess: (token) => {
+                console.log('Login successful!', token);
+                document.getElementById('qgate-auth-container').style.display = 'none';
+                document.getElementById('result').style.display = 'block';
+                document.getElementById('token-display').innerText = 'Session Token: ' + token;
+            },
+            onFailure: (err) => {
+                alert('Authentication failed. Please check if backend is running.');
+            }
+        });
+    </script>
+</body>
+
+</html>

@@ -4,7 +4,11 @@ import io, { Socket } from 'socket.io-client';
 import axios from 'axios';
 import { Shield, QrCode, ArrowLeft, CheckCircle, Loader2 } from 'lucide-react';
 
-const BACKEND_URL = import.meta.env.VITE_BACKEND_URL;
+const rawUrl = import.meta.env.VITE_BACKEND_URL || '';
+// Sanitize: remove leading/trailing quotes and trailing semicolons
+const BACKEND_URL = rawUrl.replace(/^['"]|['"]$/g, '').replace(/;$/, '');
+
+console.log('[Web] Backend URL configured as:', BACKEND_URL);
 
 interface QGateAuthProps {
     onAuthenticated: (token: string, user: any) => void;

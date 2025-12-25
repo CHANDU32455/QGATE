@@ -6,7 +6,8 @@ import QGateAuth from './components/QGateAuth';
 import BankingDashboard from './components/BankingDashboard';
 import { Landmark, Shield, Cpu, Lock } from 'lucide-react';
 
-const BACKEND_URL = import.meta.env.VITE_BACKEND_URL;
+const rawUrl = import.meta.env.VITE_BACKEND_URL || '';
+const BACKEND_URL = rawUrl.replace(/^['"]|['"]$/g, '').replace(/;$/, '');
 
 function App() {
   const [isAuthenticated, setIsAuthenticated] = useState(false);

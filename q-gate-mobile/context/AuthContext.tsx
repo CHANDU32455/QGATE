@@ -3,7 +3,7 @@ import { Platform } from 'react-native';
 import { UnifiedStorage } from '../utils/storage';
 import axios from 'axios';
 import io, { Socket } from 'socket.io-client';
-import { hasIdentity, getIdentityMetadata, getPublicKey, storeIdentityMetadata } from '../utils/pqc';
+import { hasIdentity, getIdentityMetadata, getPublicKey, storeIdentityMetadata, resetIdentity } from '../utils/pqc';
 
 import { BACKEND_URL } from '../constants/Config';
 
@@ -82,14 +82,33 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
                     try {
                         const pk = await getPublicKey();
                         if (pk) {
-                            const syncResp = await axios.post(`${BACKEND_URL}/api/mobile/sync`, { publicKey: pk });
+                            // Add 5s timeout so we don't hang forever
+                            const syncResp = await axios.post(`${BACKEND_URL}/api/mobile/sync`,
+                                { publicKey: pk },
+                                { timeout: 5000 }
+                            );
+
                             const { regUserId, username } = syncResp.data;
                             await storeIdentityMetadata(regUserId, username);
                             meta = { regUserId, username };
                             console.log('[Auth] Self-Healing Sync SUCCESS:', username);
                         }
-                    } catch (syncErr) {
-                        console.error('[Auth] Self-Healing Sync FAILED:', syncErr);
+                    } catch (syncErr: any) {
+                        console.error('[Auth] Self-Healing Sync FAILED:', syncErr.message);
+
+                        // If Server says "Not Found" (404), our keys are orphaned. 
+                        // We MUST reset local identity to allow re-registration.
+                        if (syncErr.response?.status === 404) {
+                            console.warn('[Auth] Orphaned Identity detected. Resetting local keys.');
+                            // Optional: You could Alert here, but usually better to let UI handle "Not Registered" state
+                            await resetIdentity();
+                            setIsRegistered(false);
+                            // Stop execution here effectively
+                            return;
+                        }
+
+                        // If Network Error, we just stay in "Registered but Metadata Missing" state?
+                        // Or we might want to retry later. For now, we won't block the app.
                     }
                 }
 

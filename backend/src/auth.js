@@ -11,6 +11,7 @@ const pkg = require('@asanrom/dilithium');
 const { DilithiumLevel, DILITHIUM_LEVEL3_P, DilithiumKeyPair } = pkg;
 const level3 = new DilithiumLevel(DILITHIUM_LEVEL3_P);
 const rateLimit = require('express-rate-limit');
+const mongoose = require('mongoose');
 
 // --- MIDDLEWARE ---
 const adminOnly = async (req, res, next) => {
@@ -23,7 +24,7 @@ const adminOnly = async (req, res, next) => {
     if (!sessionData) return res.status(401).json({ error: 'Session expired' });
 
     const user = JSON.parse(sessionData);
-    if (user.role !== 'admin') {
+    if (user.role !== 'admin' && user.role !== 'promoted_admin') {
       return res.status(403).json({ error: 'Forbidden: Admin access required' });
     }
 
@@ -35,7 +36,30 @@ const adminOnly = async (req, res, next) => {
   }
 };
 
+const rootOnly = async (req, res, next) => {
+  try {
+    const authHeader = req.headers.authorization;
+    if (!authHeader) return res.status(401).json({ error: 'Unauthorized' });
+
+    const token = authHeader.split(' ')[1];
+    const sessionData = await redisClient.get(`session:${token}`);
+    if (!sessionData) return res.status(401).json({ error: 'Session expired' });
+
+    const user = JSON.parse(sessionData);
+    if (user.role !== 'admin') {
+      return res.status(403).json({ error: 'Forbidden: Only the Root Administrator can perform this security audit.' });
+    }
+
+    req.adminUser = user;
+    next();
+  } catch (err) {
+    console.error('[Backend] rootOnly middleware error:', err);
+    res.status(500).json({ error: 'Middleware error' });
+  }
+};
+
 const regLimiter = rateLimit({ windowMs: 15 * 60 * 1000, max: 20 });
+const authLimiter = rateLimit({ windowMs: 15 * 60 * 1000, max: 50 });
 
 // --- 1a. REGISTER INITIATE ---
 router.post('/register/initiate', regLimiter, async (req, res) => {
@@ -133,7 +157,7 @@ router.get('/admin/users', adminOnly, async (req, res) => {
   }
 });
 
-router.delete('/admin/users/:regUserId', adminOnly, async (req, res) => {
+router.delete('/admin/users/:regUserId', rootOnly, async (req, res) => {
   try {
     const { regUserId } = req.params;
 
@@ -164,18 +188,30 @@ router.delete('/admin/users/:regUserId', adminOnly, async (req, res) => {
   }
 });
 
-router.patch('/admin/users/:regUserId/role', adminOnly, async (req, res) => {
+router.patch('/admin/users/:regUserId/role', rootOnly, async (req, res) => {
   try {
     const { role } = req.body;
-    if (!['admin', 'user'].includes(role)) {
+    if (!['admin', 'promoted_admin', 'user'].includes(role)) {
       return res.status(400).json({ error: 'Invalid role' });
     }
 
-    // Enforce Max 5 Admins
-    if (role === 'admin') {
-      const adminCount = await User.countDocuments({ role: 'admin' });
-      if (adminCount >= 5) {
-        return res.status(400).json({ error: 'Administrator limit reached (Max 5)' });
+    // 1. Prevent Root Admin from demoting themselves
+    if (req.params.regUserId === req.adminUser.userId && role !== 'admin') {
+      return res.status(400).json({ error: 'Security Protection: The Root Administrator cannot demote themselves.' });
+    }
+
+    // 2. Enforce Max 5 Total Admins (1 Root + 4 Promoted)
+    if (role === 'admin' || role === 'promoted_admin') {
+      const existingUser = await User.findOne({ regUserId: req.params.regUserId });
+      const wasAdmin = existingUser && (existingUser.role === 'admin' || existingUser.role === 'promoted_admin');
+
+      if (!wasAdmin) {
+        const adminCount = await User.countDocuments({
+          role: { $in: ['admin', 'promoted_admin'] }
+        });
+        if (adminCount >= 5) {
+          return res.status(400).json({ error: 'Network Capacity Reached: Maximum of 5 active administrators allowed.' });
+        }
       }
     }
 
@@ -191,6 +227,104 @@ router.patch('/admin/users/:regUserId/role', adminOnly, async (req, res) => {
   } catch (err) {
     console.error('[Backend] Admin update role error:', err);
     res.status(500).json({ error: 'Failed to update role' });
+  }
+});
+
+router.get('/admin/stats', adminOnly, async (req, res) => {
+  try {
+    const totalUsers = await User.countDocuments();
+    const sessionKeys = await redisClient.keys('session:*');
+    const activeSessions = sessionKeys.length;
+
+    // QRNG Health Check
+    let qrngOk = false;
+    try {
+      const { getRandomBytes } = require('./qrng');
+      const r = await getRandomBytes(1);
+      qrngOk = r.source === 'qrng';
+    } catch (e) { }
+
+    res.json({
+      totalUsers,
+      activeSessions,
+      qrngStatus: qrngOk ? 'Quantum High Entropy' : 'CSPRNG (System)',
+      dbStatus: mongoose.connection.readyState === 1 ? 'Connected' : 'Disconnected',
+      redisStatus: redisClient.isOpen ? 'Connected' : 'Disconnected'
+    });
+  } catch (err) {
+    console.error('[Backend] Admin stats error:', err);
+    res.status(500).json({ error: 'Failed to fetch stats' });
+  }
+});
+
+router.get('/admin/users/:regUserId/sessions', adminOnly, async (req, res) => {
+  try {
+    const { regUserId } = req.params;
+    const tokens = await redisClient.sMembers(`user_sessions:${regUserId}`);
+    const details = [];
+    for (const t of tokens) {
+      const s = await redisClient.get(`session:${t}`);
+      if (s) details.push({ token: t, ...JSON.parse(s) });
+      else await redisClient.sRem(`user_sessions:${regUserId}`, t);
+    }
+    res.json(details);
+  } catch (err) {
+    console.error('[Backend] Admin user sessions error:', err);
+    res.status(500).json({ error: 'Failed to fetch user sessions' });
+  }
+});
+
+router.post('/admin/users/:regUserId/revoke-all', adminOnly, async (req, res) => {
+  try {
+    const { regUserId } = req.params;
+    const tokens = await redisClient.sMembers(`user_sessions:${regUserId}`);
+    if (tokens.length > 0) {
+      await Promise.all(tokens.map(t => redisClient.del(`session:${t}`)));
+      await redisClient.del(`user_sessions:${regUserId}`);
+    }
+
+    // Notify user's devices
+    const io = req.app.get('io');
+    io.to(`user:${regUserId}`).emit('sessions_updated');
+
+    console.log(`[Backend] Admin ${req.adminUser.username} revoked ALL sessions for: ${regUserId}`);
+    res.json({ success: true, revokedCount: tokens.length });
+  } catch (err) {
+    console.error('[Backend] Admin revoke all error:', err);
+    res.status(500).json({ error: 'Failed to revoke sessions' });
+  }
+});
+
+router.patch('/admin/users/:regUserId/status', adminOnly, async (req, res) => {
+  try {
+    const { regUserId } = req.params;
+    const { status } = req.body;
+    if (!['active', 'locked', 'pending_recovery'].includes(status)) {
+      return res.status(400).json({ error: 'Invalid status' });
+    }
+
+    const user = await User.findOneAndUpdate({ regUserId }, { status }, { new: true });
+    if (!user) return res.status(404).json({ error: 'User not found' });
+
+    // Notify user's devices
+    const io = req.app.get('io');
+    io.to(`user:${regUserId}`).emit('status_updated', { status: user.status });
+
+    // If locked/pending, clear all sessions as a precaution
+    if (status !== 'active') {
+      const tokens = await redisClient.sMembers(`user_sessions:${regUserId}`);
+      if (tokens.length > 0) {
+        await Promise.all(tokens.map(t => redisClient.del(`session:${t}`)));
+        await redisClient.del(`user_sessions:${regUserId}`);
+        io.to(`user:${regUserId}`).emit('sessions_updated');
+      }
+    }
+
+    console.log(`[Backend] Admin ${req.adminUser.username} updated status for ${user.username} to ${status}`);
+    res.json({ success: true, status: user.status });
+  } catch (err) {
+    console.error('[Backend] Admin update status error:', err);
+    res.status(500).json({ error: 'Failed to update status' });
   }
 });
 
@@ -239,11 +373,22 @@ router.post('/recover', async (req, res) => {
       return res.status(404).json({ error: 'No identity found for this key. Was this registered?' });
     }
 
-    console.log(`[Backend] /recover - Identity restored for: ${user.username}`);
+    // Flag user for admin approval
+    user.status = 'pending_recovery';
+    user.lastRecoveryAt = new Date();
+    await user.save();
+
+    console.log(`[Backend] /recover - Identity recovery REQUESTED for: ${user.username}. Pending Admin Approval.`);
     await redisClient.del(`reg_session:${regSessionId}`);
+
+    // Notify user's devices about status change
+    const io = req.app.get('io');
+    io.to(`user:${user.regUserId}`).emit('status_updated', { status: user.status });
 
     res.json({
       success: true,
+      approvalRequired: true,
+      message: 'Recovery detected. For security, an administrator must approve this new device rebind before you can log in.',
       regUserId: user.regUserId,
       username: user.username
     });
@@ -254,7 +399,7 @@ router.post('/recover', async (req, res) => {
 });
 
 // --- 2. INITIATE ---
-router.post('/initiate', async (req, res) => {
+router.post('/initiate', authLimiter, async (req, res) => {
   try {
     const { regUserId: idInput } = req.body;
     if (!idInput) return res.status(400).json({ error: 'Missing Identity/Username' });
@@ -276,6 +421,23 @@ router.post('/initiate', async (req, res) => {
   }
 });
 
+// --- 2b. GENERIC INITIATE (For "Login with QGate" button) ---
+router.post('/auth/initiate-generic', authLimiter, async (req, res) => {
+  try {
+    const sessionId = uuidv4();
+    const { bytes: nonceBytes } = await getRandomBytes(32);
+    const nonce = nonceBytes.toString('base64');
+
+    // Store with a slightly shorter TTL or same as normal challenge
+    await redisClient.setEx(`challenge:${sessionId}`, 120, JSON.stringify({ generic: true, nonce }));
+
+    res.json({ sessionId, nonce });
+  } catch (err) {
+    console.error('[Backend] Generic Initiate Error:', err);
+    res.status(500).json({ error: 'Failed to initiate generic auth' });
+  }
+});
+
 // --- 3. VERIFY ---
 router.post('/verify', async (req, res) => {
   try {
@@ -285,6 +447,14 @@ router.post('/verify', async (req, res) => {
     const { regUserId, nonce } = JSON.parse(raw);
     const user = await User.findOne({ regUserId });
     if (!user) return res.status(404).json({ error: 'User not found' });
+
+    if (user.status !== 'active') {
+      return res.status(403).json({
+        error: `ACCOUNT_${user.status.toUpperCase()}`,
+        message: `Your account is currently ${user.status}. Please contact an administrator.`
+      });
+    }
+
     const isValid = verifyPQ(nonce, signature, user.pq_pub_key);
     if (!isValid) {
       console.warn(`[Backend] /verify - Signature check FAILED for user: ${user.username}`);
@@ -324,6 +494,14 @@ router.post('/mobile/verify', async (req, res) => {
     const { nonce } = JSON.parse(raw);
     const user = await User.findOne({ regUserId });
     if (!user) return res.status(404).json({ error: 'User not found' });
+
+    if (user.status !== 'active') {
+      return res.status(403).json({
+        error: `ACCOUNT_${user.status.toUpperCase()}`,
+        message: `Your account is currently ${user.status}. Please contact an administrator.`
+      });
+    }
+
     const isValid = verifyPQ(nonce, signature, user.pq_pub_key);
     if (!isValid) {
       console.warn(`[Backend] /mobile/verify - Signature check FAILED for user: ${user.username}`);

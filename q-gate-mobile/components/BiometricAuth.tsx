@@ -2,14 +2,13 @@ import React, { useState, useEffect } from 'react';
 import { View, Text, StyleSheet, Alert, ActivityIndicator, TouchableOpacity, Dimensions } from 'react-native';
 import * as LocalAuthentication from 'expo-local-authentication';
 import axios from 'axios';
-import * as SecureStore from 'expo-secure-store';
-import { useRouter } from 'expo-router';
 import * as Haptics from 'expo-haptics';
 import { Ionicons } from '@expo/vector-icons';
 
 import { signMessage } from '../utils/pqc';
 import { useAuth } from '../context/AuthContext';
 import { ThemedText } from './themed-text';
+import { UnifiedStorage } from '../utils/storage';
 
 const { width } = Dimensions.get('window');
 
@@ -26,17 +25,10 @@ type BiometricAuthProps = {
 };
 
 export default function BiometricAuth({ sessionData, onReset }: BiometricAuthProps) {
-  const router = useRouter();
   const { user: authUser } = useAuth();
   const [loading, setLoading] = useState(false);
-  const [verifying, setVerifying] = useState(false); // New state for scanning effect
+  const [verifying, setVerifying] = useState(false);
   const [status, setStatus] = useState('Challenge Received');
-
-  const qrPayload = JSON.stringify({
-    sessionId: sessionData.sessionId,
-    nonce: sessionData.nonce,
-    regUserId: sessionData.regUserId
-  });
 
   const authenticate = async () => {
     try {
@@ -89,7 +81,7 @@ export default function BiometricAuth({ sessionData, onReset }: BiometricAuthPro
       const token = resp.data.token;
       if (token && !useRemoteVerify) {
         // Only save token locally if it's a local unlock, NOT for web login
-        await SecureStore.setItemAsync('qgate_token', token);
+        await UnifiedStorage.setItem('qgate_token', token);
       }
 
       setStatus('Access Granted ✅');
@@ -104,10 +96,14 @@ export default function BiometricAuth({ sessionData, onReset }: BiometricAuthPro
       console.error('Verification error:', error);
       setStatus('Verification Failed ❌');
       await Haptics.notificationAsync(Haptics.NotificationFeedbackType.Error);
-      Alert.alert(
-        'Authentication Error',
-        error.response?.data?.error || 'Quantum signature mismatch or connection lost.'
-      );
+      const errorData = error.response?.data;
+      let errorMsg = errorData?.error || 'Quantum signature mismatch or connection lost.';
+
+      if (errorData?.message) {
+        errorMsg = errorData.message;
+      }
+
+      Alert.alert('Access Denied', errorMsg);
     } finally {
       setLoading(false);
       setVerifying(false); // Stop scanning effect
